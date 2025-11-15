@@ -9,8 +9,10 @@ to identify security concerns and authentication issues.
 import argparse
 import gzip
 import json
+import select
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree
@@ -228,7 +230,6 @@ class DMARCFileHandler(FileSystemEventHandler):
         self.processed_files.add(file_path)
         
         # Small delay to ensure file is fully written
-        import time
         time.sleep(0.5)
         
         analyze_file(file_path, self.ollama_client, self.model, self.processed_dir)
@@ -281,33 +282,65 @@ def analyze_file(file_path: Path, ollama_client: OllamaClient, model: str, proce
     return True
 
 
-def monitor_directory(directory: Path, ollama_client: OllamaClient, model: str):
-    """Monitor directory for new DMARC report files."""
-    if not directory.exists():
-        print(f"Error: Directory {directory} does not exist", file=sys.stderr)
-        sys.exit(1)
-    
-    if not directory.is_dir():
-        print(f"Error: {directory} is not a directory", file=sys.stderr)
-        sys.exit(1)
-    
-    # Set up processed directory
+def get_existing_reports(directory: Path) -> list[Path]:
+    """Get list of existing report files in directory."""
+    reports = []
+    for file_path in directory.glob("*.xml"):
+        if file_path.is_file() and file_path.parent == directory:
+            reports.append(file_path)
+    for file_path in directory.glob("*.gz"):
+        if file_path.is_file() and file_path.parent == directory:
+            reports.append(file_path)
+    return reports
+
+
+def process_existing_files(directory: Path, ollama_client: OllamaClient, model: str) -> set[Path]:
+    """Process existing files in directory and return set of processed file paths."""
     processed_dir = directory / "processed"
     print(f"Processed files will be moved to: {processed_dir}", file=sys.stderr)
     
     processed_files = set()
+    reports = get_existing_reports(directory)
     
-    # Process existing files
-    print("Processing existing files...", file=sys.stderr)
-    for file_path in directory.glob("*.xml"):
-        if file_path.is_file() and file_path.parent == directory:
+    if reports:
+        print(f"Found {len(reports)} report(s) to process...", file=sys.stderr)
+        for file_path in reports:
             analyze_file(file_path, ollama_client, model, processed_dir)
             processed_files.add(file_path)
+    else:
+        print("No existing reports found in directory", file=sys.stderr)
     
-    for file_path in directory.glob("*.gz"):
-        if file_path.is_file() and file_path.parent == directory:
-            analyze_file(file_path, ollama_client, model, processed_dir)
-            processed_files.add(file_path)
+    return processed_files
+
+
+def prompt_monitor_mode(timeout: int = 30) -> bool:
+    """Prompt user if they want to run in monitor mode with timeout. Returns True if yes, False otherwise."""
+    print(f"\nStart monitoring for new reports? (y/n) [default: n, timeout: {timeout}s]: ", end="", file=sys.stderr)
+    sys.stderr.flush()
+    
+    start_time = time.time()
+    response = ""
+    
+    while time.time() - start_time < timeout:
+        if select.select([sys.stdin], [], [], 0.1)[0]:
+            try:
+                response = sys.stdin.readline().strip().lower()
+                break
+            except (EOFError, KeyboardInterrupt):
+                break
+        time.sleep(0.1)
+    
+    if not response:
+        print("n", file=sys.stderr)  # Echo default
+        print("No response received, defaulting to 'no'", file=sys.stderr)
+        return False
+    
+    return response == "y"
+
+
+def start_monitoring(directory: Path, ollama_client: OllamaClient, model: str, processed_files: set[Path]):
+    """Start monitoring directory for new DMARC report files."""
+    processed_dir = directory / "processed"
     
     # Set up file system watcher
     event_handler = DMARCFileHandler(ollama_client, model, processed_files, processed_dir)
@@ -318,12 +351,36 @@ def monitor_directory(directory: Path, ollama_client: OllamaClient, model: str):
     try:
         print(f"Monitoring {directory} for new DMARC reports... (Press Ctrl+C to stop)", file=sys.stderr)
         while True:
-            import time
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nStopping monitor...", file=sys.stderr)
         observer.stop()
     observer.join()
+
+
+def monitor_directory(directory: Path, ollama_client: OllamaClient, model: str):
+    """Monitor directory for new DMARC report files."""
+    if not directory.exists():
+        print(f"Error: Directory {directory} does not exist", file=sys.stderr)
+        sys.exit(1)
+    
+    if not directory.is_dir():
+        print(f"Error: {directory} is not a directory", file=sys.stderr)
+        sys.exit(1)
+    
+    # Process existing files
+    processed_files = process_existing_files(directory, ollama_client, model)
+    
+    # Check if there were existing files
+    if processed_files:
+        # Ask user if they want to monitor
+        if prompt_monitor_mode():
+            start_monitoring(directory, ollama_client, model, processed_files)
+        else:
+            print("Exiting", file=sys.stderr)
+    else:
+        # No existing files, start monitoring immediately
+        start_monitoring(directory, ollama_client, model, processed_files)
 
 
 def main():
