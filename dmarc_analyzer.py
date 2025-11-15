@@ -9,6 +9,7 @@ to identify security concerns and authentication issues.
 import argparse
 import gzip
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -65,8 +66,12 @@ class OllamaClient:
     def check_connection(self) -> bool:
         """Check if Ollama service is available."""
         try:
+            print("Connecting to Ollama service...", file=sys.stderr)
             response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            return response.status_code == 200
+            if response.status_code == 200:
+                print("Connected to Ollama service", file=sys.stderr)
+                return True
+            return False
         except requests.RequestException:
             return False
     
@@ -93,6 +98,7 @@ class OllamaClient:
         
         # Check if default model is still available
         if default_model and default_model in available_models:
+            print(f"Using default model: {default_model}", file=sys.stderr)
             return default_model
         
         # Prompt user to select a model
@@ -122,6 +128,7 @@ class OllamaClient:
     
     def analyze_dmarc_report(self, model: str, xml_content: str) -> str:
         """Send DMARC report to Ollama for analysis."""
+        print(f"Analyzing report with {model}...", file=sys.stderr)
         prompt = """You are a cybersecurity analyst reviewing a DMARC (Domain-based Message Authentication, Reporting & Conformance) report.
 
 Analyze the following DMARC report XML and identify any security concerns, authentication failures, suspicious patterns, or issues that require attention.
@@ -155,7 +162,9 @@ DMARC Report XML:
             )
             response.raise_for_status()
             result = response.json()
-            return result.get("response", "").strip()
+            analysis = result.get("response", "").strip()
+            print("Analysis complete", file=sys.stderr)
+            return analysis
         except requests.RequestException as e:
             print(f"Error communicating with Ollama: {e}", file=sys.stderr)
             return ""
@@ -168,6 +177,7 @@ class FileProcessor:
     def read_file(file_path: Path) -> Optional[str]:
         """Read file content, handling gzip compression."""
         try:
+            print(f"Reading file: {file_path.name}", file=sys.stderr)
             if file_path.suffix == ".gz":
                 with gzip.open(file_path, "rt", encoding="utf-8") as f:
                     content = f.read()
@@ -197,10 +207,11 @@ class FileProcessor:
 class DMARCFileHandler(FileSystemEventHandler):
     """Handler for file system events in monitoring mode."""
     
-    def __init__(self, ollama_client: OllamaClient, model: str, processed_files: set):
+    def __init__(self, ollama_client: OllamaClient, model: str, processed_files: set, processed_dir: Path):
         self.ollama_client = ollama_client
         self.model = model
         self.processed_files = processed_files
+        self.processed_dir = processed_dir
     
     def on_created(self, event):
         """Handle file creation events."""
@@ -220,11 +231,33 @@ class DMARCFileHandler(FileSystemEventHandler):
         import time
         time.sleep(0.5)
         
-        analyze_file(file_path, self.ollama_client, self.model)
+        analyze_file(file_path, self.ollama_client, self.model, self.processed_dir)
 
 
-def analyze_file(file_path: Path, ollama_client: OllamaClient, model: str) -> bool:
+def move_to_processed(file_path: Path, processed_dir: Path) -> bool:
+    """Move file to processed directory."""
+    try:
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        destination = processed_dir / file_path.name
+        # Handle name conflicts by appending a number
+        counter = 1
+        while destination.exists():
+            stem = file_path.stem
+            suffix = file_path.suffix
+            destination = processed_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+        
+        shutil.move(str(file_path), str(destination))
+        print(f"Moved to: {destination}", file=sys.stderr)
+        return True
+    except (IOError, OSError) as e:
+        print(f"Warning: Could not move file to processed directory: {e}", file=sys.stderr)
+        return False
+
+
+def analyze_file(file_path: Path, ollama_client: OllamaClient, model: str, processed_dir: Optional[Path] = None) -> bool:
     """Analyze a single DMARC report file."""
+    print(f"Processing: {file_path}", file=sys.stderr)
     xml_content = FileProcessor.read_file(file_path)
     if xml_content is None:
         return False
@@ -241,6 +274,10 @@ def analyze_file(file_path: Path, ollama_client: OllamaClient, model: str) -> bo
     else:
         print(analysis)
     
+    # Move file to processed directory if specified
+    if processed_dir is not None:
+        move_to_processed(file_path, processed_dir)
+    
     return True
 
 
@@ -254,21 +291,26 @@ def monitor_directory(directory: Path, ollama_client: OllamaClient, model: str):
         print(f"Error: {directory} is not a directory", file=sys.stderr)
         sys.exit(1)
     
+    # Set up processed directory
+    processed_dir = directory / "processed"
+    print(f"Processed files will be moved to: {processed_dir}", file=sys.stderr)
+    
     processed_files = set()
     
     # Process existing files
+    print("Processing existing files...", file=sys.stderr)
     for file_path in directory.glob("*.xml"):
-        if file_path.is_file():
-            analyze_file(file_path, ollama_client, model)
+        if file_path.is_file() and file_path.parent == directory:
+            analyze_file(file_path, ollama_client, model, processed_dir)
             processed_files.add(file_path)
     
     for file_path in directory.glob("*.gz"):
-        if file_path.is_file():
-            analyze_file(file_path, ollama_client, model)
+        if file_path.is_file() and file_path.parent == directory:
+            analyze_file(file_path, ollama_client, model, processed_dir)
             processed_files.add(file_path)
     
     # Set up file system watcher
-    event_handler = DMARCFileHandler(ollama_client, model, processed_files)
+    event_handler = DMARCFileHandler(ollama_client, model, processed_files, processed_dir)
     observer = Observer()
     observer.schedule(event_handler, str(directory), recursive=False)
     observer.start()
@@ -279,6 +321,7 @@ def monitor_directory(directory: Path, ollama_client: OllamaClient, model: str):
             import time
             time.sleep(1)
     except KeyboardInterrupt:
+        print("\nStopping monitor...", file=sys.stderr)
         observer.stop()
     observer.join()
 
@@ -319,12 +362,14 @@ def main():
     # Process files or monitor directory
     if args.files:
         # Process specified files
+        # For direct file processing, move to processed subdirectory relative to each file's parent
         for file_arg in args.files:
-            file_path = Path(file_arg)
+            file_path = Path(file_arg).resolve()
             if not file_path.exists():
                 print(f"Error: File not found: {file_path}", file=sys.stderr)
                 continue
-            analyze_file(file_path, ollama_client, model)
+            processed_dir = file_path.parent / "processed"
+            analyze_file(file_path, ollama_client, model, processed_dir)
     else:
         # Monitor directory
         monitor_dir = Path.home() / "Downloads" / "dmarc-report-inbox"
