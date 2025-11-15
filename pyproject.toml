@@ -1,7 +1,10 @@
 [project]
 name = "dmarc-checker"
 version = "0.1.0"
-description = "Add your description here"
+description = "Use Ollama to assess DMARC report and flag any concerns or issues."
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "requests>=2.31.0",
+    "watchdog>=3.0.0",
+]
