@@ -320,13 +320,25 @@ def prompt_monitor_mode(timeout: int = 30) -> bool:
     
     start_time = time.time()
     response = ""
+    last_displayed_seconds = timeout
     
     while time.time() - start_time < timeout:
+        elapsed = time.time() - start_time
+        remaining_seconds = int(timeout - elapsed)
+        
+        # Update countdown display every second
+        if remaining_seconds != last_displayed_seconds:
+            last_displayed_seconds = remaining_seconds
+            print(f"\rStart monitoring for new reports? (y/n) [default: n, timeout: {remaining_seconds}s]: ", end="", file=sys.stderr)
+            sys.stderr.flush()
+        
         if select.select([sys.stdin], [], [], 0.1)[0]:
             try:
                 response = sys.stdin.readline().strip().lower()
+                print("", file=sys.stderr)  # New line after response
                 break
             except (EOFError, KeyboardInterrupt):
+                print("", file=sys.stderr)  # New line after interrupt
                 break
         time.sleep(0.1)
     
