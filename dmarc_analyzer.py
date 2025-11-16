@@ -2,7 +2,7 @@
 """
 DMARC Report Analyzer with Ollama Integration
 
-Analyzes DMARC reports (XML or gzip-compressed) using a local Ollama LLM
+Analyzes DMARC reports (XML, gzip-compressed, or zip archives) using a local Ollama LLM
 to identify security concerns and authentication issues.
 """
 
@@ -13,6 +13,7 @@ import select
 import shutil
 import sys
 import time
+import zipfile
 from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree
@@ -177,12 +178,25 @@ class FileProcessor:
     
     @staticmethod
     def read_file(file_path: Path) -> Optional[str]:
-        """Read file content, handling gzip compression."""
+        """Read file content, handling gzip compression and zip archives."""
         try:
             print(f"Reading file: {file_path.name}", file=sys.stderr)
             if file_path.suffix == ".gz":
                 with gzip.open(file_path, "rt", encoding="utf-8") as f:
                     content = f.read()
+            elif file_path.suffix == ".zip":
+                # Extract XML from zip archive
+                with zipfile.ZipFile(file_path, "r") as zip_ref:
+                    # Find XML files in the archive
+                    xml_files = [name for name in zip_ref.namelist() if name.lower().endswith(".xml")]
+                    if not xml_files:
+                        print(f"Error: No XML files found in zip archive {file_path}", file=sys.stderr)
+                        return None
+                    if len(xml_files) > 1:
+                        print(f"Warning: Multiple XML files found in zip, using first: {xml_files[0]}", file=sys.stderr)
+                    # Read the first XML file
+                    with zip_ref.open(xml_files[0]) as f:
+                        content = f.read().decode("utf-8")
             else:
                 with open(file_path, "r", encoding="utf-8") as f:
                     content = f.read()
@@ -197,6 +211,9 @@ class FileProcessor:
             return content
         except gzip.BadGzipFile:
             print(f"Error: {file_path} is not a valid gzip file", file=sys.stderr)
+            return None
+        except zipfile.BadZipFile:
+            print(f"Error: {file_path} is not a valid zip file", file=sys.stderr)
             return None
         except IOError as e:
             print(f"Error reading {file_path}: {e}", file=sys.stderr)
@@ -219,7 +236,7 @@ class DMARCFileHandler(FileSystemEventHandler):
         """Handle file creation events."""
         if not event.is_directory:
             file_path = Path(event.src_path)
-            if file_path.suffix in (".xml", ".gz"):
+            if file_path.suffix in (".xml", ".gz", ".zip"):
                 self._process_file(file_path)
     
     def _process_file(self, file_path: Path):
@@ -289,6 +306,9 @@ def get_existing_reports(directory: Path) -> list[Path]:
         if file_path.is_file() and file_path.parent == directory:
             reports.append(file_path)
     for file_path in directory.glob("*.gz"):
+        if file_path.is_file() and file_path.parent == directory:
+            reports.append(file_path)
+    for file_path in directory.glob("*.zip"):
         if file_path.is_file() and file_path.parent == directory:
             reports.append(file_path)
     return reports
@@ -403,7 +423,7 @@ def main():
     parser.add_argument(
         "files",
         nargs="*",
-        help="DMARC report files to analyze (XML or .gz). If not provided, monitors ~/Downloads/dmarc-report-inbox"
+        help="DMARC report files to analyze (XML, .gz, or .zip). If not provided, monitors ~/Downloads/dmarc-report-inbox"
     )
     parser.add_argument(
         "--ollama-url",
