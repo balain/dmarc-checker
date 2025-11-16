@@ -390,7 +390,7 @@ def start_monitoring(directory: Path, ollama_client: OllamaClient, model: str, p
     observer.join()
 
 
-def monitor_directory(directory: Path, ollama_client: OllamaClient, model: str):
+def monitor_directory(directory: Path, ollama_client: OllamaClient, model: str, auto_monitor: bool = False):
     """Monitor directory for new DMARC report files."""
     if not directory.exists():
         print(f"Error: Directory {directory} does not exist", file=sys.stderr)
@@ -405,8 +405,10 @@ def monitor_directory(directory: Path, ollama_client: OllamaClient, model: str):
     
     # Check if there were existing files
     if processed_files:
-        # Ask user if they want to monitor
-        if prompt_monitor_mode():
+        # Ask user if they want to monitor (unless auto_monitor is enabled)
+        if auto_monitor:
+            start_monitoring(directory, ollama_client, model, processed_files)
+        elif prompt_monitor_mode():
             start_monitoring(directory, ollama_client, model, processed_files)
         else:
             print("Exiting", file=sys.stderr)
@@ -429,6 +431,11 @@ def main():
         "--ollama-url",
         default="http://localhost:11434",
         help="Ollama API base URL (default: http://localhost:11434)"
+    )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Enable monitoring mode without confirmation prompt (only applies when no files specified)"
     )
     
     args = parser.parse_args()
@@ -462,7 +469,7 @@ def main():
     else:
         # Monitor directory
         monitor_dir = Path.home() / "Downloads" / "dmarc-report-inbox"
-        monitor_directory(monitor_dir, ollama_client, model)
+        monitor_directory(monitor_dir, ollama_client, model, auto_monitor=args.monitor)
 
 
 if __name__ == "__main__":
