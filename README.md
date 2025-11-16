@@ -4,7 +4,7 @@ A Python script that analyzes DMARC (Domain-based Message Authentication, Report
 
 ## Features
 
-- **Multiple Input Formats**: Supports both XML and gzip-compressed (.gz) DMARC reports
+- **Multiple Input Formats**: Supports XML, gzip-compressed (.gz), and zip archive (.zip) DMARC reports
 - **Ollama Integration**: Uses local Ollama LLM for intelligent analysis
 - **Model Management**: Automatically detects available models and allows setting a default
 - **Monitoring Mode**: Watches a directory for new reports when run without arguments
@@ -43,7 +43,8 @@ ollama pull llama3
 ```bash
 python dmarc_analyzer.py report.xml
 python dmarc_analyzer.py report.xml.gz
-python dmarc_analyzer.py report1.xml report2.xml.gz
+python dmarc_analyzer.py report.zip
+python dmarc_analyzer.py report1.xml report2.xml.gz report3.zip
 ```
 
 ### Monitor Directory
@@ -65,6 +66,44 @@ If Ollama is running on a different host/port:
 
 ```bash
 python dmarc_analyzer.py --ollama-url http://localhost:11434 report.xml
+```
+
+### Enable Monitoring Without Confirmation
+
+To automatically start monitoring after processing existing files (skips the confirmation prompt):
+
+```bash
+python dmarc_analyzer.py --monitor
+```
+
+## Command-Line Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `files` | One or more DMARC report files to analyze (XML, .gz, or .zip). If not provided, the script monitors `~/Downloads/dmarc-report-inbox` for new files. |
+| `--ollama-url URL` | Ollama API base URL (default: `http://localhost:11434`). Use this if Ollama is running on a different host or port. |
+| `--monitor` | Enable monitoring mode without confirmation prompt. Only applies when no files are specified. After processing existing files, automatically starts monitoring for new reports. |
+
+### Examples
+
+```bash
+# Analyze a single file
+python dmarc_analyzer.py report.xml
+
+# Analyze multiple files
+python dmarc_analyzer.py report1.xml report2.xml.gz report3.zip
+
+# Monitor directory with confirmation prompt (default)
+python dmarc_analyzer.py
+
+# Monitor directory without confirmation prompt
+python dmarc_analyzer.py --monitor
+
+# Use custom Ollama URL
+python dmarc_analyzer.py --ollama-url http://192.168.1.100:11434 report.xml
+
+# Combine options
+python dmarc_analyzer.py --ollama-url http://localhost:11434 --monitor
 ```
 
 ## Model Selection
